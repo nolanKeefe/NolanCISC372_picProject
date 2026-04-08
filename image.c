@@ -3,12 +3,40 @@
 #include <time.h>
 #include <string.h>
 #include "image.h"
+#include <pthread.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+
+//Number of threads
+#define NUM_THREADS 4
+
+//Structure for Pthreads functionality
+struct ThreadArgs{
+    int startRow;
+    int endRow;
+    Image* srcImage;
+    Image* destImage;
+    Matrix algorithm;
+};
+
+//Pthread worker function
+void* threadConvolute(void* args){
+    struct ThreadArgs* data = (struct ThreadArgs*)args;
+    int row,pix,bit;
+    for (row=data->startRow;row<data->endRow;row++){
+        for (pix=0;pix<data->srcImage->width;pix++){
+            for (bit=0;bit<data->srcImage->bpp;bit++){
+                data->destImage->data[Index(pix,row,data->srcImage->width,bit,data->srcImage->bpp)]=getPixelValue(data->srcImage,pix,row,bit,data->algorithm);
+            }
+        }
+    }
+    return NULL;
+}
+
 
 //An array of kernel matrices to be used for image convolution.  
 //The indexes of these match the enumeration from the header file. ie. algorithms[BLUR] returns the kernel corresponding to a box blur.
@@ -29,7 +57,7 @@ Matrix algorithms[]={
 //          bit: The color channel being manipulated
 //          algorithm: The 3x3 kernel matrix to use for the convolution
 //Returns: The new value for this x,y pixel and bit channel
-uint8_t getPixelValue(Image* srcImage,int x,int y,int bit,Matrix algorithm){
+uint8_t getPixelValue(Image* srcImage,int x,int y,int bit,Matrix algorithm){ //Doesn't look parallelizable
     int px,mx,py,my,i,span;
     span=srcImage->width*srcImage->bpp;
     // for the edge pixes, just reuse the edge pixel
@@ -57,20 +85,32 @@ uint8_t getPixelValue(Image* srcImage,int x,int y,int bit,Matrix algorithm){
 //            algorithm: The kernel matrix to use for the convolution
 //Returns: Nothing
 void convolute(Image* srcImage,Image* destImage,Matrix algorithm){
-    int row,pix,bit,span;
-    span=srcImage->bpp*srcImage->bpp;
-    for (row=0;row<srcImage->height;row++){
-        for (pix=0;pix<srcImage->width;pix++){
-            for (bit=0;bit<srcImage->bpp;bit++){
-                destImage->data[Index(pix,row,srcImage->width,bit,srcImage->bpp)]=getPixelValue(srcImage,pix,row,bit,algorithm);
-            }
+    pthread_t threads[NUM_THREADS];
+    struct ThreadArgs args[NUM_THREADS];
+    int chunkSize = srcImage->height/NUM_THREADS;
+    
+    for(int i = 0; i<NUM_THREADS;i++){
+        //need to set all the parts of args
+        args[i].startRow = i*chunkSize;
+        args[i].endRow = args[i].startRow + chunkSize;
+        args[i].srcImage = srcImage;
+        args[i].destImage = destImage;
+        memcpy(args[i].algorithm, algorithm, sizeof(Matrix));
+
+        if(i == NUM_THREADS-1){//last thread gets the excess
+            args[i].endRow = srcImage->height;
         }
+        //makes threads
+        pthread_create(&threads[i], NULL, threadConvolute, &args[i]);
+    }
+    for(int i = 0; i<NUM_THREADS;i++){//rejoin the threads
+        pthread_join(threads[i], NULL);
     }
 }
 
 //Usage: Prints usage information for the program
 //Returns: -1
-int Usage(){
+int Usage(){//not parallizable
     printf("Usage: image <filename> <type>\n\twhere type is one of (edge,sharpen,blur,gauss,emboss,identity)\n");
     return -1;
 }
@@ -78,7 +118,7 @@ int Usage(){
 //GetKernelType: Converts the string name of a convolution into a value from the KernelTypes enumeration
 //Parameters: type: A string representation of the type
 //Returns: an appropriate entry from the KernelTypes enumeration, defaults to IDENTITY, which does nothing but copy the image.
-enum KernelTypes GetKernelType(char* type){
+enum KernelTypes GetKernelType(char* type){//Not parallelizable
     if (!strcmp(type,"edge")) return EDGE;
     else if (!strcmp(type,"sharpen")) return SHARPEN;
     else if (!strcmp(type,"blur")) return BLUR;
@@ -89,7 +129,7 @@ enum KernelTypes GetKernelType(char* type){
 
 //main:
 //argv is expected to take 2 arguments.  First is the source file name (can be jpg, png, bmp, tga).  Second is the lower case name of the algorithm.
-int main(int argc,char** argv){
+int main(int argc,char** argv){//need to add the basic parallel stuff
     long t1,t2;
     t1=time(NULL);
 
